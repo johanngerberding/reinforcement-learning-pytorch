@@ -74,7 +74,7 @@ def plot_stats(
                             edgecolor='#006600',
                             facecolor='#006600')
         axs[0].set_title("Mean Rewards per Episode")
-        axs[0].set_xlabel("Episode")
+        axs[0].set_xlabel("Episode (in {})".format(window_size))
         axs[0].set_ylabel("Reward")
         axs[1].plot(mean_losses, color='#cc0000', label="losses")
         axs[1].fill_between([x for x in range(len(mean_losses))],
@@ -84,7 +84,7 @@ def plot_stats(
                             edgecolor='#cc0000',
                             facecolor='#cc0000')
         axs[1].set_title("Mean Loss per Episode")
-        axs[1].set_xlabel("Episode")
+        axs[1].set_xlabel("Episode (in {})".format(window_size))
         axs[1].set_ylabel("Loss")
 
         if actions:
@@ -103,7 +103,6 @@ def plot_stats(
 
 
 # TESTING
-"""
 def main():
     test_reward = [[random.randint(0, 200) for _ in range(1000)]
                    for _ in range(10)]
@@ -118,4 +117,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-"""

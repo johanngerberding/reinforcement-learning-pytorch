@@ -8,4 +8,6 @@ Stats incoming
 
 ## LunarLander
 
-Stats incoming
+### Training Stats
+
+![Training REINFORCE algorithm for LunarLander environment](assets/train_lunar_2000_steps.png)
