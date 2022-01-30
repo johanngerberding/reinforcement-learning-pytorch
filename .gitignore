@@ -1,0 +1,6 @@
+.env
+.data
+__pycache__
+*.pth
+.DS_Store
+exps
