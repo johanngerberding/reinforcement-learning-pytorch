@@ -116,11 +116,11 @@ def plot_stats(
                 ["{}%".format(int(t * 100)) for t in axs[2].get_yticks().tolist()]
             )
 
-        plt.show()
-
         if save:
             out = os.path.join(save_dir, "results.png")
             fig.savefig(out)
+        
+        plt.show()
 
 
 # TESTING
