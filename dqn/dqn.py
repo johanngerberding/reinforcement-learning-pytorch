@@ -1,8 +1,4 @@
-import os
-import datetime
-import torch
 import torch.nn as nn
-import torch.optim as optim
 import torch.nn.functional as F
 
 
@@ -19,11 +15,21 @@ class DQN(nn.Module):
         self.action_space = action_space
         self.hidden_dim = hidden_dim
         self.gamma = gamma
-
+        
+        self.fc1 = nn.Linear(observation_space, 256)
+        self.fc2 = nn.Linear(256, 128)
+        self.fc3 = nn.Linear(128, 64)
+        self.fc4 = nn.Linear(64, action_space)
+        
+def forward(self, x):
+    x = F.relu(self.fc1(x))
+    x = F.relu(self.fc2(x))
+    x = F.relu(self.fc3(x))
+    return self.fc4(x)
 
 
 class DQN_Conv(nn.Module):
-    def __init__(self, in_channels, action_space)
+    def __init__(self, in_channels, action_space):
         super(DQN_Conv, self).__init__()
         self.in_channels = in_channels
         self.action_space = action_space
@@ -44,11 +50,3 @@ class DQN_Conv(nn.Module):
         x = F.relu(self.conv3(x))
         x = F.relu(self.fc4(self.flatten(x)))
         return self.fc5(x)
-
-
-def main():
-    pass
-
-
-if __name__ == "__main__":
-    main()
