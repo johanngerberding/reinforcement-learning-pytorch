@@ -8,6 +8,7 @@ import gym
 import gym.spaces 
 from collections import deque, namedtuple
 import numpy as np 
+from torch.utils.tensorboard import SummaryWriter
 
 from atari_wrappers import generate_env
 from dqn import DQN_Conv
@@ -49,125 +50,139 @@ class ReplayBuffer:
 
 
 class Agent:
-    def __init__(
-        self, 
-        actions, 
-        lr: float, 
-        eps_start: float,
-        eps_decay: float,
-        eps_min: float, 
-        num_frames: int = 4, 
-        gamma: float = 0.95, 
-        max_len_memory: int = 10000
-    ):
-        self.memory = ReplayBuffer(max_len_memory)
-        self.actions = actions 
-        self.eps = eps_start
-        self.eps_decay = eps_decay
-        self.eps_min = eps_min
-        self.gamma = gamma 
-        self.lr = lr 
-        self.num_frames = num_frames
-        self.total_timesteps = 0
-        self.Q = DQN_Conv(self.num_frames, len(actions)).to(DEVICE)
-        self.Q_tar = DQN_Conv(self.num_frames, len(actions)).to(DEVICE)
-        self.optimizer = torch.optim.Adam(self.Q.parameters(), lr=self.lr)
+    def __init__(self, env, replay_buffer):
+        self.env = env
+        self.replay_buffer = replay_buffer
+        self._reset()
+
+    def _reset(self):
+        self.state = self.env.reset()
+        self.total_reward = 0.0 
+
+
+    def step(self, model, epsilon=0.0):
+        done_reward = None
+        
+        if np.random.random() < epsilon:
+            action = self.env.action_space.sample()
+        else: 
+            state_a = np.array([self.state], copy=False)
+            state_v = torch.tensor(state_a).to(DEVICE)
+            q_vals = model(state_v)
+            _, act = torch.max(q_vals, dim=1)
+            action = int(act.item())
     
-    def sample_action(self, state):
-        "Epsilon-greedy action selection."
-        # Explore
-        if np.random.rand() < self.eps:
-            return random.sample(self.actions, 1)[0]
+        next_state, reward, done, _ = self.env.step(action)
+        self.total_reward += reward
+        exp = Experience(self.state, action, reward, done, next_state)
+        self.replay_buffer.append(exp)
+        self.state = next_state
+        
+        if done:
+            done_reward = self.total_reward
+            self._reset()
+        
+        return done_reward
 
-        # Greedy action
-        act_idx = torch.argmax(self.Q(state)).cpu().numpy()
-        return self.actions[act_idx]
-
-    def train(self, batch):
-        states, actions, rewards, dones, next_states = batch 
-        states = torch.tensor(states).to(DEVICE)
-        next_states = torch.tensor(next_states).to(DEVICE)
-        actions = torch.tensor(actions).to(DEVICE)
-        rewards = torch.tensor(rewards).to(DEVICE)
-        done_mask = torch.ByteTensor(dones).to(DEVICE)
-        
-        state_action_values = self.Q(states).gather(1, actions.unsqueeze(-1)).squeeze(-1)
-        print(state_action_values.size())
-        next_state_values = self.Q_tar(next_states).max(1)[0]
-        print(next_state_values.size())
-        next_state_values[done_mask] = 0.0
-        next_state_values = next_state_values.detach()
-        # calculate y with bellman equation
-        expected_state_action_values = next_state_values * self.gamma + rewards
-        
-        loss = torch.nn.MSELoss()(state_action_values, expected_state_action_values)
-        
-        self.optimizer.zero_grad()
-        loss.backward()
-        self.optimizer.step()
-        
-        return loss
-
-    def sync(self):
-        "Sync target network"
-        self.Q_tar.load_state_dict(self.Q.state_dict())
-        
+                  
         
 def main():    
     # Hyperparameters 
     eps_start=1.0
     eps_decay=.999985
     eps_min=0.02
+    replay_buffer_size = 100000
     init_experiences = 10000
-    sync_target_network = 10000
+    sync_target_network = 1000
     batch_size = 32
+    learning_rate = 0.00025
+    reward_bound = 19.0
+    gamma = 0.99
     
-    env_name = "PongDeterministic-v4"
-    
+    # env_name = "PongDeterministic-v4"
+    env_name = "PongNoFrameskip-v4"
     env = generate_env(env_name)
     frame = env.reset()
     
     print(type(frame))
     print(frame.shape)
-    
-    print(env.action_space.n)
-    print(env.unwrapped.get_action_meanings())
-    print(env.action_space)
     print(env.observation_space.shape)
+    print(env.action_space.n)
     
-    # SAMPLING PHASE
-    # fill up the Replay Buffer by interaction
-    actions = [x for x in range(env.action_space.n)]
-    agent = Agent(actions, 0.003, eps_start, eps_decay, eps_min)
-    state = env.reset()
+    Q_network = DQN_Conv(4, env.action_space.n).to(DEVICE)
+    Q_tar_network = DQN_Conv(4, env.action_space.n).to(DEVICE)
     
-            
-    while True:
-        # sample phase
-        state = torch.tensor(state).to(DEVICE)
-        action = agent.sample_action(state)
-        next_state, reward, done, info = env.step(action)
-        state = state.cpu().numpy()
-        exp = Experience(state, action, reward, done, next_state)
-        agent.memory.append(exp)
-        state = next_state
-        frame_idx = 0
+    replay_buffer = ReplayBuffer(replay_buffer_size)
+    agent = Agent(env, replay_buffer)
+    
+    writer = SummaryWriter(comment="-" + env_name)
+    
+    eps = eps_start
+    
+    optimizer = torch.optim.Adam(Q_network.parameters(), lr=learning_rate) 
+    loss_fn = torch.nn.MSELoss()
+    
+    total_rewards = []
+    frame_idx = 0 
+    best_mean_reward = None 
+    
+    while True: 
+        # Sampling Phase
+        frame_idx += 1 
+        eps = max(eps * eps_decay, eps_min)
+        reward = agent.step(Q_network, eps)
         
-        if len(agent.memory) >= init_experiences:
-            print(f"Saved {init_experiences} experiences.")
+        if reward is not None: 
+            total_rewards.append(reward)
+            mean_reward = np.mean(total_rewards[-100:])
+            print("{}: {} games, mean reward {}, (epsilon {})".format(frame_idx, len(total_rewards), mean_reward, eps))
+
+            writer.add_scalar("epsilon", eps, frame_idx)
+            writer.add_scalar("mean_reward_last_100", mean_reward, frame_idx)
+            writer.add_scalar("reward", reward, frame_idx)
             
-            frame_idx += 1
-            agent.eps = max(agent.eps * agent.eps_decay, agent.eps_min)
+            if best_mean_reward is None or best_mean_reward < mean_reward:
+                torch.save(Q_network.state_dict(), env_name + "-best.pth")
+                best_mean_reward = mean_reward
+
+                if best_mean_reward is not None:
+                    print(f"Best mean reward updated: {best_mean_reward}")
             
-            # learning phase 
-            batch = agent.memory.sample(batch_size)
-            loss = agent.train(batch)
-            
-            if frame_idx % sync_target_network == 0:
-                agent.sync()
-            break
+            if mean_reward > reward_bound:
+                print(f"Solved in {frame_idx} frames.")
+                break
+                
+        if len(replay_buffer) < init_experiences:
+            continue 
+        
+        # Training Phase
+        batch = replay_buffer.sample(batch_size)
+        states, actions, rewards, dones, next_states = batch 
+        
+        states_t = torch.tensor(states).to(DEVICE)
+        actions_t = torch.tensor(actions).to(DEVICE)
+        rewards_t = torch.tensor(rewards).to(DEVICE)
+        dones_t = torch.ByteTensor(dones).to(DEVICE)
+        next_states_t = torch.tensor(next_states).to(DEVICE)
+        
+        state_action_values = Q_network(states_t).gather(1, actions_t.unsqueeze(-1)).squeeze(-1)
+        next_state_values = Q_tar_network(next_states_t).max(1)[0]
+        
+        next_state_values[dones_t] = 0.0 
+        next_state_values = next_state_values.detach() 
+        
+        expected_state_action_values = next_state_values * gamma + rewards_t 
+        loss_t = loss_fn(state_action_values, expected_state_action_values)
+        
+        optimizer.zero_grad()
+        loss_t.backward()
+        optimizer.step() 
+        
+        if frame_idx % sync_target_network == 0:
+            Q_tar_network.load_state_dict(Q_network.state_dict())
     
     env.close()
+    writer.close()
 
 
 if __name__ == "__main__":
