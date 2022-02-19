@@ -88,14 +88,14 @@ class Agent:
         
 def main():    
     # Hyperparameters 
-    eps_start=1.0
-    eps_decay=.999985
-    eps_min=0.02
-    replay_buffer_size = 100000
+    eps_start = 1.0
+    eps_decay = 0.999985
+    eps_min = 0.02
+    replay_buffer_size = 10000
     init_experiences = 10000
     sync_target_network = 1000
     batch_size = 32
-    learning_rate = 0.00025
+    learning_rate = 1e-4
     reward_bound = 19.0
     gamma = 0.99
     
@@ -119,8 +119,7 @@ def main():
     
     eps = eps_start
     
-    optimizer = torch.optim.Adam(Q_network.parameters(), lr=learning_rate) 
-    loss_fn = torch.nn.MSELoss()
+    optimizer = torch.optim.Adam(Q_network.parameters(), lr=learning_rate)
     
     total_rewards = []
     frame_idx = 0 
@@ -155,7 +154,12 @@ def main():
         if len(replay_buffer) < init_experiences:
             continue 
         
+        if frame_idx % sync_target_network == 0:
+            Q_tar_network.load_state_dict(Q_network.state_dict())
+            print("Target Network updated.")
+        
         # Training Phase
+        optimizer.zero_grad()
         batch = replay_buffer.sample(batch_size)
         states, actions, rewards, dones, next_states = batch 
         
@@ -172,17 +176,13 @@ def main():
         next_state_values = next_state_values.detach() 
         
         expected_state_action_values = next_state_values * gamma + rewards_t 
-        loss_t = loss_fn(state_action_values, expected_state_action_values)
+        loss_t = torch.nn.MSELoss()(state_action_values, expected_state_action_values)
         
-        optimizer.zero_grad()
         loss_t.backward()
         optimizer.step() 
         
-        if frame_idx % sync_target_network == 0:
-            Q_tar_network.load_state_dict(Q_network.state_dict())
-    
-    env.close()
     writer.close()
+    env.close()
 
 
 if __name__ == "__main__":
