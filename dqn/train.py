@@ -2,6 +2,7 @@ import os
 import argparse 
 import torch
 import json 
+import time 
 import gym.spaces 
 from collections import deque, namedtuple
 import numpy as np 
@@ -158,6 +159,8 @@ def main():
     frame_idx = 0 
     best_mean_reward = None 
     
+    start = time.time()
+    
     while True: 
         # Sampling Phase
         frame_idx += 1 
@@ -217,6 +220,11 @@ def main():
         
     writer.close()
     env.close()
+    end = time.time()
+    training_time = end - start
+    h = training_time // 3600
+    min = training_time % 3600 // 60
+    print(f"Training took {int(h)} hours and {int(min)} minutes.")
 
 
 if __name__ == "__main__":
