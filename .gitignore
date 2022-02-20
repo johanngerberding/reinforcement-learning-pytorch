@@ -6,3 +6,6 @@ __pycache__
 exps
 .dist
 runs
+out
+.ipynb_checkpoints
+exps

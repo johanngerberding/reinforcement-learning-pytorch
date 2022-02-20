@@ -22,14 +22,31 @@ Experience = namedtuple(
 
 
 class ReplayBuffer:
-    def __init__(self, capacity: int):
+    def __init__(self, capacity: int, gamma: float, nstep: int = 1):
+        self.nstep = nstep
+        self.gamma = gamma
         self.buffer = deque(maxlen=capacity)
+        self.nstep_buffer = deque(maxlen=nstep)
         
     def __len__(self):
         return len(self.buffer)
 
+    def _get_nsteps(self):
+        reward, done, next_state = self.nstep_buffer[-1][-3:]
+        for _, _, rew, do, next_st in reversed(list(self.nstep_buffer)[:-1]):
+            reward = rew + self.gamma * reward * (1 - do)
+            next_state, done = (next_st, do) if do else (next_state, done) 
+        return reward, done, next_state
+
     def append(self, experience: Experience):
-        self.buffer.append(experience)
+        self.nstep_buffer.append(experience)
+        # if we haven't enough samples, wait till buffer full       
+        if len(self.nstep_buffer) < self.nstep:
+            return 
+        reward, done, next_state = self._get_nsteps()
+        state, action = self.nstep_buffer[0][:2]
+        exp = Experience(state, action, reward, done, next_state)
+        self.buffer.append(exp)
     
     def sample(self, batch_size: int):
         indices = np.random.choice(
@@ -100,25 +117,31 @@ def main():
                         default=32)
     parser.add_argument("--eps", type=float, 
                         help="Epsilon starting value", 
-                        default=1e-4)
+                        default=1.0)
     parser.add_argument("--eps_min", type=float, 
                         help="Epsilon minimum value", 
-                        default=0.02)
+                        default=0.01)
     parser.add_argument("--eps_decay", type=float, 
                         help="Epsilon decay rate", 
-                        default=0.999985)
+                        default=0.9999985)
     parser.add_argument("--replay_buffer", type=int, 
                         help="Size of the replay buffer", 
-                        default=100000)
+                        default=10000)
     parser.add_argument("--min_exps", type=int, 
                         help="Minimum number of experiences before training", 
                         default=10000)
     parser.add_argument("--sync", type=int, 
                         help="Network synchronisation interval", 
-                        default=1000)
+                        default=1500)
     parser.add_argument("--reward_bound", type=float, 
                         help="Bound for reward to be done", 
                         default=21.0)
+    parser.add_argument("--nstep", type=int, 
+                        help="n-step DQN", 
+                        default=3)
+    parser.add_argument("--ddqn", type=bool, 
+                        help="Double DQN", 
+                        default=True)
     parser.add_argument("--out", type=str, 
                         help="Path to output directory", default=None)
     args = parser.parse_args()
@@ -126,7 +149,7 @@ def main():
     if not args.out:
         curr_dir = os.path.dirname(os.path.abspath(__file__))
         d = date.today().strftime("%d-%m-%Y")
-        outdir = os.path.join(curr_dir, args.env + "_" + d)
+        outdir = os.path.join(curr_dir, "exps", args.env + "_" + d)
     else: 
         outdir = args.out 
     
@@ -142,7 +165,7 @@ def main():
     Q_network = DQN_Conv(4, env.action_space.n).to(DEVICE)
     Q_tar_network = DQN_Conv(4, env.action_space.n).to(DEVICE)
     
-    replay_buffer = ReplayBuffer(args.replay_buffer)
+    replay_buffer = ReplayBuffer(args.replay_buffer, args.gamma, args.nstep)
     agent = Agent(env, replay_buffer)
     
     writer = SummaryWriter(
@@ -152,8 +175,7 @@ def main():
     
     eps = args.eps
     
-    optimizer = torch.optim.Adam(Q_network.parameters(), lr=args.lr)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, "min")
+    optimizer = torch.optim.RMSprop(Q_network.parameters(), lr=args.lr)
     
     total_rewards = []
     frame_idx = 0 
@@ -175,6 +197,8 @@ def main():
             writer.add_scalar("epsilon", eps, frame_idx)
             writer.add_scalar("mean_reward_last_100", mean_reward, frame_idx)
             writer.add_scalar("reward", reward, frame_idx)
+            writer.add_scalar("replay_buffer_size", len(replay_buffer), frame_idx)
+            
             
             if best_mean_reward is None or best_mean_reward < mean_reward:
                 torch.save(Q_network.state_dict(), 
@@ -206,17 +230,26 @@ def main():
         dones_t = torch.ByteTensor(dones).to(DEVICE)
         next_states_t = torch.tensor(next_states).to(DEVICE)
         
-        state_action_values = Q_network(states_t).gather(1, actions_t.unsqueeze(-1)).squeeze(-1)
-        next_state_values = Q_tar_network(next_states_t).max(1)[0]
+        state_action_values = Q_network(states_t).gather(
+            1, actions_t.unsqueeze(-1)).squeeze(-1)
+        
+        if args.ddqn:
+            next_state_actions = Q_network(next_states_t).max(1)[1]
+            next_state_values = Q_tar_network(next_state_values).gather(
+                1, next_state_actions.unsqueeze(-1)
+            ).squeeze(-1)
+        else:
+            next_state_values = Q_tar_network(next_states_t).max(1)[0]
         
         next_state_values[dones_t] = 0.0 
         next_state_values = next_state_values.detach() 
-        
-        expected_state_action_values = next_state_values * args.gamma + rewards_t 
+        expected_state_action_values = rewards_t + (args.gamma**args.nstep) * next_state_values
+       
         loss_t = torch.nn.MSELoss()(state_action_values, expected_state_action_values)
         
         loss_t.backward()
-        scheduler.step(loss_t) 
+        optimizer.step() 
+        # writer.add_scalar("learning_rate", optimizer.param_groups[0]['lr'], frame_idx)
         
     writer.close()
     env.close()

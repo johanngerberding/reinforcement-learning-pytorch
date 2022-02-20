@@ -2,6 +2,13 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+class NoisyLinearLayer(nn.Module):
+    def __init__(self, in_features, out_features, sigma, bias=True):
+        super(NoisyLinearLayer, self).__init__(in_features, out_features, bias)
+        self.sigma = nn.Parameter()
+        
+
+
 class DQN(nn.Module):
     def __init__(
             self,
