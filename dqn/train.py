@@ -6,11 +6,13 @@ import time
 import gym.spaces 
 from collections import deque, namedtuple
 import numpy as np 
-from datetime import date 
+from datetime import date
 from torch.utils.tensorboard import SummaryWriter
 
 from atari_wrappers import generate_env
-from dqn import DQN_Conv
+from dqn import DQN_Conv, NoisyDQN
+
+torch.autograd.set_detect_anomaly(True)
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -65,20 +67,21 @@ class ReplayBuffer:
 
 
 class Agent:
-    def __init__(self, env, replay_buffer):
+    def __init__(self, env, replay_buffer, noisy=False):
         self.env = env
         self.replay_buffer = replay_buffer
+        self.noisy = noisy
         self._reset()
 
     def _reset(self):
         self.state = self.env.reset()
         self.total_reward = 0.0 
 
-
+    #@torch.no_grad()
     def step(self, model, epsilon=0.0):
         done_reward = None
         
-        if np.random.random() < epsilon:
+        if np.random.random() < epsilon and not self.noisy:
             action = self.env.action_space.sample()
         else: 
             state_a = np.array([self.state], copy=False)
@@ -142,9 +145,13 @@ def main():
     parser.add_argument("--ddqn", type=bool, 
                         help="Double DQN", 
                         default=True)
+    parser.add_argument("--noisy", type=str, 
+                        help="Noisy networks, options: ['independent', 'factorized']")
     parser.add_argument("--out", type=str, 
                         help="Path to output directory", default=None)
     args = parser.parse_args()
+    
+    assert args.noisy in ['independent', 'factorized', None]
     
     if not args.out:
         curr_dir = os.path.dirname(os.path.abspath(__file__))
@@ -160,13 +167,29 @@ def main():
         json.dump(vars(args), f, indent=4)
     
     env = generate_env(args.env)
-    _ = env.reset()
-    
-    Q_network = DQN_Conv(4, env.action_space.n).to(DEVICE)
-    Q_tar_network = DQN_Conv(4, env.action_space.n).to(DEVICE)
+    frame = env.reset()
+       
+    if args.noisy:
+        Q_network = NoisyDQN(
+            frame.shape[0], 
+            frame.shape[1:], 
+            env.action_space.n
+        ).to(DEVICE)
+        Q_tar_network = NoisyDQN(
+            frame.shape[0], 
+            frame.shape[1:], 
+            env.action_space.n
+        ).to(DEVICE)
+    else:
+        Q_network = DQN_Conv(frame.shape[0], env.action_space.n).to(DEVICE)
+        Q_tar_network = DQN_Conv(frame.shape[0], env.action_space.n).to(DEVICE)
     
     replay_buffer = ReplayBuffer(args.replay_buffer, args.gamma, args.nstep)
-    agent = Agent(env, replay_buffer)
+    
+    if args.noisy:
+        agent = Agent(env, replay_buffer, True)
+    else: 
+        agent = Agent(env, replay_buffer)
     
     writer = SummaryWriter(
         log_dir=outdir,
@@ -219,6 +242,11 @@ def main():
             Q_tar_network.load_state_dict(Q_network.state_dict())
             print("Target Network updated.")
         
+        if frame_idx % 500 == 0 and args.noisy:
+            snr_vals = Q_network.noisy_layers_sigma_snr()
+            for layer_idx, sigma_l2 in enumerate(snr_vals):
+                writer.add_scalar(f"sigma_snr_layer_{layer_idx+1}", sigma_l2, frame_idx)
+        
         # Training Phase
         optimizer.zero_grad()
         batch = replay_buffer.sample(args.batch_size)
@@ -235,7 +263,7 @@ def main():
         
         if args.ddqn:
             next_state_actions = Q_network(next_states_t).max(1)[1]
-            next_state_values = Q_tar_network(next_state_values).gather(
+            next_state_values = Q_tar_network(next_states_t).gather(
                 1, next_state_actions.unsqueeze(-1)
             ).squeeze(-1)
         else:
@@ -249,8 +277,7 @@ def main():
         
         loss_t.backward()
         optimizer.step() 
-        # writer.add_scalar("learning_rate", optimizer.param_groups[0]['lr'], frame_idx)
-        
+                
     writer.close()
     env.close()
     end = time.time()
