@@ -41,25 +41,23 @@ class DQN(nn.Module):
             self,
             observation_space: int,
             action_space: int,
-            hidden_dim: int,
             gamma: float = 0.99
     ):
         super(DQN, self).__init__()
         self.observation_space = observation_space
         self.action_space = action_space
-        self.hidden_dim = hidden_dim
         self.gamma = gamma
         
-        self.fc1 = nn.Linear(observation_space, 256)
-        self.fc2 = nn.Linear(256, 128)
+        self.fc1 = nn.Linear(observation_space, 64)
+        self.fc2 = nn.Linear(64, 128)
         self.fc3 = nn.Linear(128, 64)
         self.fc4 = nn.Linear(64, action_space)
         
-def forward(self, x):
-    x = F.relu(self.fc1(x))
-    x = F.relu(self.fc2(x))
-    x = F.relu(self.fc3(x))
-    return self.fc4(x)
+    def forward(self, x):
+        x = F.relu(self.fc1(x))
+        x = F.relu(self.fc2(x))
+        x = F.relu(self.fc3(x))
+        return self.fc4(x)
 
 
 class DQN_Conv(nn.Module):
@@ -79,6 +77,7 @@ class DQN_Conv(nn.Module):
         self.fc5 = nn.Linear(512, self.action_space)
 
     def forward(self, x):
+        x = x.float() / 256
         x = F.relu(self.conv1(x))
         x = F.relu(self.conv2(x))
         x = F.relu(self.conv3(x))
@@ -115,6 +114,7 @@ class NoisyDQN(nn.Module):
         )
         
     def forward(self, x):
+        x = x.float() / 256
         x = self.conv(x)
         x = self.flatten(x)
         x = self.noisy_fcs(x)

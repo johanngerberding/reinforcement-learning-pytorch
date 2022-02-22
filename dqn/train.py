@@ -10,8 +10,9 @@ from datetime import date
 from torch.utils.tensorboard import SummaryWriter
 
 from atari_wrappers import generate_env
-from dqn import DQN_Conv, NoisyDQN
+from dqn import DQN, DQN_Conv, NoisyDQN
 
+# this helps for debugging
 torch.autograd.set_detect_anomaly(True)
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -102,16 +103,19 @@ class Agent:
         
         return done_reward
 
+# Tested environments
+ATARI_ENVS = ["PongNoFrameskip-v4"]
+OTHER_ENVS = ["CartPole-v0", "MountainCar-v0"]
                   
         
 def main():  
     parser = argparse.ArgumentParser()  
     parser.add_argument("--env", type=str, 
                         help="Name of the gym environment", 
-                        default="PongNoFrameskip-v4")
+                        default="MountainCar-v0")
     parser.add_argument("--gamma", type=float, 
                         help="Gamma hyperparameter", 
-                        default=0.99)
+                        default=1.0)
     parser.add_argument("--lr", type=float, 
                         help="Learning Rate", 
                         default=1e-4)
@@ -126,25 +130,25 @@ def main():
                         default=0.01)
     parser.add_argument("--eps_decay", type=float, 
                         help="Epsilon decay rate", 
-                        default=0.9999985)
+                        default=0.99985)
     parser.add_argument("--replay_buffer", type=int, 
                         help="Size of the replay buffer", 
                         default=10000)
     parser.add_argument("--min_exps", type=int, 
                         help="Minimum number of experiences before training", 
-                        default=10000)
+                        default=1000)
     parser.add_argument("--sync", type=int, 
                         help="Network synchronisation interval", 
                         default=1500)
     parser.add_argument("--reward_bound", type=float, 
                         help="Bound for reward to be done", 
-                        default=21.0)
+                        default=0.5)
     parser.add_argument("--nstep", type=int, 
                         help="n-step DQN", 
                         default=3)
     parser.add_argument("--ddqn", type=bool, 
                         help="Double DQN", 
-                        default=True)
+                        default=False)
     parser.add_argument("--noisy", type=str, 
                         help="Noisy networks, options: ['independent', 'factorized']")
     parser.add_argument("--out", type=str, 
@@ -152,6 +156,7 @@ def main():
     args = parser.parse_args()
     
     assert args.noisy in ['independent', 'factorized', None]
+    assert args.env in ATARI_ENVS or args.env in OTHER_ENVS
     
     if not args.out:
         curr_dir = os.path.dirname(os.path.abspath(__file__))
@@ -166,7 +171,11 @@ def main():
     with open(os.path.join(outdir, "params.json"), 'wt') as f:
         json.dump(vars(args), f, indent=4)
     
-    env = generate_env(args.env)
+    if args.env in ATARI_ENVS:
+        env = generate_env(args.env)
+    else: 
+        env = gym.make(args.env)
+        
     frame = env.reset()
        
     if args.noisy:
@@ -180,9 +189,12 @@ def main():
             frame.shape[1:], 
             env.action_space.n
         ).to(DEVICE)
-    else:
+    elif args.env in ATARI_ENVS:
         Q_network = DQN_Conv(frame.shape[0], env.action_space.n).to(DEVICE)
         Q_tar_network = DQN_Conv(frame.shape[0], env.action_space.n).to(DEVICE)
+    else: 
+        Q_network = DQN(env.observation_space.shape[0], env.action_space.n, args.gamma).to(DEVICE)
+        Q_tar_network = DQN(env.observation_space.shape[0], env.action_space.n, args.gamma).to(DEVICE)
     
     replay_buffer = ReplayBuffer(args.replay_buffer, args.gamma, args.nstep)
     
