@@ -1,3 +1,5 @@
+import os
+from datetime import date
 import gym
 import numpy as np
 import torch
@@ -13,8 +15,28 @@ class Params:
     LR = 0.0001
     BATCH_SIZE = 64
     GAMMA = 0.99
-    HIDDEN_SIZE = 64
+    HIDDEN_SIZE = 128
     BETA = 0.1 # entropy bonus multiplier
+
+
+# shared backbone model
+class ActorCritic(nn.Module):
+    def __init__(self, observation_space, action_space, hidden):
+        super(ActorCritic, self).__init__()
+        self.backbone = nn.Sequential(
+            nn.Linear(observation_space, hidden, bias=True),
+            nn.ReLU(),
+            nn.Linear(hidden, hidden, bias=True),
+            nn.ReLU(),
+        )
+        self.actor = nn.Linear(hidden, action_space, bias=True)
+        self.critic = nn.Linear(hidden, 1, bias=True)
+
+
+    def forward(self, x):
+        x = F.normalize(x, dim=1)
+        x = self.backbone(x)
+        return self.actor(x), self.critic(x)
 
 
 class Critic(nn.Module):
@@ -47,21 +69,25 @@ class Actor(nn.Module):
 
 
 class PolicyGradient:
-    def __init__(self):
-        self.num_epochs = 5000
-        self.lr = 0.00001
-        self.batch_size = 32
-        self.gamma = 0.99
-        self.hidden = 128
-        self.beta = 0.1
+    def __init__(self, env_name, shared_backbone):
+        self.num_epochs = Params.NUM_EPOCHS
+        self.lr = Params.LR
+        self.batch_size = Params.BATCH_SIZE
+        self.gamma = Params.GAMMA
+        self.hidden = Params.HIDDEN_SIZE
+        self.beta = Params.BETA
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-        self.env = gym.make('CartPole-v1')
-        self.actor = Actor(self.env.observation_space.shape[0],
+        self.env = gym.make(env_name)
+        if not shared_backbone:
+            self.actor = Actor(self.env.observation_space.shape[0],
                 self.env.action_space.n, self.hidden)
-        self.critic = Critic(self.env.observation_space.shape[0], self.hidden)
-        self.optimizer_actor = optim.Adam(self.actor.parameters(), self.lr)
-        self.optimizer_critic = optim.Adam(self.critic.parameters(), self.lr)
+            self.critic = Critic(self.env.observation_space.shape[0], self.hidden)
+            self.optimizer_actor = optim.Adam(self.actor.parameters(), self.lr)
+            self.optimizer_critic = optim.Adam(self.critic.parameters(), self.lr)
+        else:
+            raise NotImplementedError
+
         self.total_rewards = deque([], maxlen=100)
 
 
@@ -107,7 +133,7 @@ class PolicyGradient:
                 epoch_logits = torch.empty(size=(0, self.env.action_space.n), device=self.device)
                 epoch_weight_log_probs = torch.empty(size=(0,), dtype=torch.float, device=self.device)
 
-                if np.mean(self.total_rewards) > 195.0:
+                if np.mean(self.total_rewards) > 195.0 or epoch > self.num_epochs:
                     print("Environment solved!")
                     break
 
@@ -204,9 +230,18 @@ class PolicyGradient:
 
 
 def main():
+    shared_backbone = False
+    env_name = "CartPole-v1"
+    day = date.today().strftime("%Y-%m-%d")
+    exp_dir = os.path.join(os.getcwd(), "exps", env_name + "-" + day)
+    # if experiment directory exists, remove it
+    if os.path.isdir(exp_dir):
+        shutil.rmtree(exp_dir)
+        os.makedirs(exp_dir)
+    else:
+        os.makedirs(exp_dir)
 
-    exp_dir = "exps"
-    pg = PolicyGradient()
+    pg = PolicyGradient(env_name, shared_backbone)
     pg.solve_env()
     torch.save(pg.actor.state_dict(), os.path.join(exp_dir, "actor.pth"))
     torch.save(pg.critic.state_dict(), os.path.join(exp_dir, "critic.pth"))
