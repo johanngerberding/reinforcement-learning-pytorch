@@ -1,6 +1,6 @@
 import math
-import numpy as np 
-import torch 
+import numpy as np
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -14,26 +14,26 @@ class NoisyLinearLayer(nn.Linear):
             self.sigma_bias = nn.Parameter(torch.full((out_features,), sigma))
             self.register_buffer("epsilon_bias", torch.zeros(out_features))
         self.reset_parameters()
-        
+
     def reset_parameters(self):
         std = math.sqrt(3 / self.in_features)
         self.weight.data.uniform_(-std, std)
         self.bias.data.uniform_(-std, std)
-    
+
     def forward(self, input):
         self.epsilon_weight.normal_()
-        bias = self.bias 
+        bias = self.bias
         if bias is not None:
             self.epsilon_bias.normal_()
-            bias = bias + self.sigma_bias * self.epsilon_bias.data 
-        weight = self.weight 
+            bias = bias + self.sigma_bias * self.epsilon_bias.data
+        weight = self.weight
         weight = weight + self.sigma_weight * self.epsilon_weight.data
-        return F.linear(input, weight, bias) 
+        return F.linear(input, weight, bias)
 
 
 class NoisyFactorizedLinear(nn.Linear):
     def __init__(self, in_features, out_features, sigma, bias):
-        raise NotImplementedError     
+        raise NotImplementedError
 
 
 class DQN(nn.Module):
@@ -47,12 +47,12 @@ class DQN(nn.Module):
         self.observation_space = observation_space
         self.action_space = action_space
         self.gamma = gamma
-        
+
         self.fc1 = nn.Linear(observation_space, 64)
         self.fc2 = nn.Linear(64, 128)
         self.fc3 = nn.Linear(128, 64)
         self.fc4 = nn.Linear(64, action_space)
-        
+
     def forward(self, x):
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
@@ -83,7 +83,7 @@ class DQN_Conv(nn.Module):
         x = F.relu(self.conv3(x))
         x = F.relu(self.fc4(self.flatten(x)))
         return self.fc5(x)
-    
+
 
 class NoisyDQN(nn.Module):
     def __init__(self, in_channels, in_shape, action_space):
@@ -112,18 +112,18 @@ class NoisyDQN(nn.Module):
             nn.ReLU(),
             self.noisy_layers[1],
         )
-        
+
     def forward(self, x):
         x = x.float() / 256
         x = self.conv(x)
         x = self.flatten(x)
         x = self.noisy_fcs(x)
         return x
-    
+
     def _get_conv_out_shape(self, inp_shape):
         out = self.conv(torch.zeros(1, *inp_shape))
         return int(np.prod(out.size()))
-    
+
     def noisy_layers_sigma_snr(self):
         "Signal-to-Noise-Ratio"
         return [

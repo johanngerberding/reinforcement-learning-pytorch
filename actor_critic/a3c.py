@@ -1,5 +1,6 @@
 import os
 from datetime import date
+import shutil
 import gym
 import numpy as np
 import torch
@@ -12,11 +13,35 @@ from collections import deque
 
 class Params:
     NUM_EPOCHS = 5000
-    LR = 0.0001
+    LR = 0.001
     BATCH_SIZE = 64
     GAMMA = 0.99
-    HIDDEN_SIZE = 128
+    HIDDEN_SIZE = 64
     BETA = 0.1 # entropy bonus multiplier
+    VALUE_LOSS_COEF = 0.5
+
+
+class ConvActorCritic(nn.Module):
+    def __init__(self, observation_shape, action_space):
+        super(ConvActorCritic, self).__init__()
+        self.backbone = nn.Sequential(
+            nn.Conv2d(observation_shape[0], 32, kernel_size=8, stride=4),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=4, stride=2),
+            nn.ReLU(),
+            nn.Conv2d(64, 64, kernel_size=3, stride=1),
+            nn.ReLU(),
+        )
+        self.flatten = nn.Flatten()
+        self.conv_output_size = self._get_conv_output_size(observation_shape)
+        self.actor = nn.Linear(self.conv_output_size, action_space)
+        self.critic = nn.Linear(self.conv_output_size, 1)
+
+
+    def forward(self, x):
+        x = x.float() / 256
+        x = self.backbone(x)
+        return self.actor(x), self.critic(x)
 
 
 # shared backbone model
@@ -68,7 +93,7 @@ class Actor(nn.Module):
         return self.model(x)
 
 
-class PolicyGradient:
+class A3C:
     def __init__(self, env_name, shared_backbone):
         self.num_epochs = Params.NUM_EPOCHS
         self.lr = Params.LR
@@ -77,8 +102,10 @@ class PolicyGradient:
         self.hidden = Params.HIDDEN_SIZE
         self.beta = Params.BETA
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
+        self.value_loss_coef = Params.VALUE_LOSS_COEF
         self.env = gym.make(env_name)
+        self.shared_backbone = shared_backbone
+
         if not shared_backbone:
             self.actor = Actor(self.env.observation_space.shape[0],
                 self.env.action_space.n, self.hidden)
@@ -86,7 +113,8 @@ class PolicyGradient:
             self.optimizer_actor = optim.Adam(self.actor.parameters(), self.lr)
             self.optimizer_critic = optim.Adam(self.critic.parameters(), self.lr)
         else:
-            raise NotImplementedError
+            self.model = ActorCritic(self.env.observation_space.shape[0], self.env.action_space.n, self.hidden)
+            self.optimizer = optim.Adam(self.model.parameters(), self.lr)
 
         self.total_rewards = deque([], maxlen=100)
 
@@ -114,18 +142,27 @@ class PolicyGradient:
             if episode >= self.batch_size:
                 episode = 0
                 epoch += 1
-                # actor training
-                loss, entropy = self.calculate_loss(epoch_logits, epoch_weight_log_probs)
-                self.optimizer_actor.zero_grad()
-                loss.backward()
-                self.optimizer_actor.step()
 
-                # critic training ???????
-                self.optimizer_critic.zero_grad()
-                critic_loss = torch.mean(epoch_value_estimate_errors)
-                # print(f"Epoch value estimation error: {critic_loss.item()}")
-                critic_loss.backward()
-                self.optimizer_critic.step()
+                if self.shared_backbone:
+                    actor_loss, entropy = self.calculate_loss(epoch_logits, epoch_weight_log_probs)
+                    critic_loss = torch.mean(epoch_value_estimate_errors)
+                    loss = actor_loss + self.value_loss_coef * critic_loss
+                    self.optimizer.zero_grad()
+                    loss.backward()
+                    self.optimizer.step()
+                else:
+                    # actor training
+                    loss, entropy = self.calculate_loss(epoch_logits, epoch_weight_log_probs)
+                    self.optimizer_actor.zero_grad()
+                    loss.backward()
+                    self.optimizer_actor.step()
+
+                    # critic training
+                    self.optimizer_critic.zero_grad()
+                    critic_loss = torch.mean(epoch_value_estimate_errors)
+                    # print(f"Epoch value estimation error: {critic_loss.item()}")
+                    critic_loss.backward()
+                    self.optimizer_critic.step()
 
                 print(f"Epoch: {epoch}, Avg Return per Epoch: {np.mean(self.total_rewards):.3f}")
 
@@ -153,7 +190,11 @@ class PolicyGradient:
 
 
         while True:
-            action_logits = self.actor(torch.tensor(state).float().unsqueeze(0).to(self.device))
+            if self.shared_backbone:
+                action_logits, value_estimate = self.model(torch.tensor(state).float().unsqueeze(0).to(self.device))
+            else:
+                action_logits = self.actor(torch.tensor(state).float().unsqueeze(0).to(self.device))
+
             logits = torch.cat((logits, action_logits), dim=0)
             action = Categorical(logits=action_logits).sample()
             actions = torch.cat((actions, action), dim=0)
@@ -165,7 +206,9 @@ class PolicyGradient:
 
             # create baseline with value estimation neural net
             # use value network to create a state value estimate and append
-            value_estimate = self.critic(torch.tensor(state).float().unsqueeze(0).to(self.device))
+            if not self.shared_backbone:
+                value_estimate = self.critic(torch.tensor(state).float().unsqueeze(0).to(self.device))
+
             value_estimates = torch.cat((value_estimates, value_estimate), dim=0)
 
             # avg_rewards = np.concatenate((avg_rewards,
@@ -173,11 +216,11 @@ class PolicyGradient:
 
             if done:
                 episode += 1
-                discounted_rewards_to_go = PolicyGradient.get_discounted_rewards(
+                discounted_rewards_to_go = A3C.get_discounted_rewards(
                         ep_rewards, self.gamma)
 
                 # these should be the state values
-                return_values = PolicyGradient.get_discounted_rewards(ep_rewards, 1.0)
+                return_values = A3C.get_discounted_rewards(ep_rewards, 1.0)
                 return_values = torch.tensor(return_values).float().to(self.device)
                 value_estimation_error = torch.sum(torch.pow((value_estimates - return_values), 2.0)).unsqueeze(0)
                 # value_estimation_error = 1 / value_estimates.shape[0] * value_estimation_error
@@ -230,7 +273,7 @@ class PolicyGradient:
 
 
 def main():
-    shared_backbone = False
+    shared_backbone = True
     env_name = "CartPole-v1"
     day = date.today().strftime("%Y-%m-%d")
     exp_dir = os.path.join(os.getcwd(), "exps", env_name + "-" + day)
@@ -241,11 +284,13 @@ def main():
     else:
         os.makedirs(exp_dir)
 
-    pg = PolicyGradient(env_name, shared_backbone)
-    pg.solve_env()
-    torch.save(pg.actor.state_dict(), os.path.join(exp_dir, "actor.pth"))
-    torch.save(pg.critic.state_dict(), os.path.join(exp_dir, "critic.pth"))
-
+    a3c= A3C(env_name, shared_backbone)
+    a3c.solve_env()
+    if shared_backbone:
+        torch.save(a3c.model.state_dictd(), os.path.join(exp_dir, "a3c.pth"))
+    else:
+        torch.save(a3c.actor.state_dict(), os.path.join(exp_dir, "actor.pth"))
+        torch.save(a3c.critic.state_dict(), os.path.join(exp_dir, "critic.pth"))
 
 
 if __name__ == "__main__":

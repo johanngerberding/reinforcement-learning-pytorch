@@ -3,7 +3,6 @@
 __pycache__
 *.pth
 .DS_Store
-exps
 .dist
 runs
 out
