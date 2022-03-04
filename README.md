@@ -7,3 +7,4 @@ I am currently learning the basics of Reinforcement Learning and try to implemen
 
 * [REINFORCE](https://github.com/johanngerberding/reinforcement-learning-pytorch/tree/master/reinforce)
 * [Deep Q-Networks](https://github.com/johanngerberding/reinforcement-learning-pytorch/tree/master/dqn) (including extensions)
+* [A2C](https://github.com/johanngerberding/reinforcement-learning-pytorch/tree/master/actor_critic)
